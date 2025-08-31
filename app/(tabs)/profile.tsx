@@ -9,15 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { 
-  User, 
-  Package, 
-  Truck, 
-  CheckCircle, 
-  Clock, 
-  Settings,
-  LogOut 
-} from 'lucide-react-native';
+import { User, Package, Truck, CircleCheck as CheckCircle, Clock, Settings, LogOut } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { getCurrentDriverId, getCurrentDriverName } from '@/lib/auth';
