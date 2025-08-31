@@ -152,7 +152,7 @@ export default function ProfileScreen() {
           <View style={styles.driverInfo}>
             <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.driverTitle}>Eazyy Chauffeur</Text>
-            {driverEmail && <Text style={styles.driverEmail}>{driverEmail}</Text>}
+            {!!driverEmail && <Text style={styles.driverEmail}>{driverEmail}</Text>}
           </View>
         </View>
         <TouchableOpacity style={styles.settingsButton}>
