@@ -225,7 +225,7 @@ export default function RouteScreen() {
             
             {activeStopId === stop.id && (
               <TouchableOpacity style={styles.arrivedButton} onPress={() => markArrived(stop.id)}>
-                <Text style={styles.arrivedButtonText}>Aangekomen</Text>
+                <Text style={styles.arrivedButtonText}>Bevestig Aangekomen</Text>
               </TouchableOpacity>
             )}
           </>
