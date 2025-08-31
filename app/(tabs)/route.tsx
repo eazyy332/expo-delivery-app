@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { MapPin, Navigation, Package, Truck, X, CheckCircle } from 'lucide-react-native';
+import { MapPin, Navigation, Package, Truck, X, CircleCheck as CheckCircle } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { getCurrentDriverId } from '@/lib/auth';
 import { canCompleteDelivery } from '@/lib/statusTransitions';
