@@ -5,9 +5,11 @@ export interface Order {
   shipping_address: string;
   pickup_date: string;
   delivery_date?: string;
-  status: 'ready_for_delivery' | 'scanned' | 'in_transit_to_facility' | 'delivered' | 'arrived_at_facility' | 'awaiting_pickup_customer' | 'in_transit_to_customer';
+  status: 'ready_for_delivery' | 'scanned' | 'in_transit_to_facility' | 'delivered' | 'arrived_at_facility';
   qr_code: string;
   assigned_driver_id?: string;
+  assigned_pickup_driver_id?: string;
+  assigned_dropoff_driver_id?: string;
   created_at: string;
   updated_at: string;
   internal_notes?: string;

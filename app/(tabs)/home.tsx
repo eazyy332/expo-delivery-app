@@ -8,8 +8,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { Truck, Package, CheckCircle, Clock } from 'lucide-react-native';
+import { Truck, Package, CheckCircle, Clock, Calendar } from 'lucide-react-native';
 import { router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+import { getCurrentDriverId, getCurrentDriverName } from '@/lib/auth';
 
 export default function HomeScreen() {
   const [stats, setStats] = useState({
@@ -28,7 +30,6 @@ export default function HomeScreen() {
 
   const loadDriverInfo = async () => {
     try {
-      const { getCurrentDriverName } = await import('@/lib/auth');
       const name = await getCurrentDriverName();
       setDriverName(name);
     } catch (error) {
@@ -39,35 +40,37 @@ export default function HomeScreen() {
   const loadStats = async () => {
     try {
       setLoading(true);
-      
-      // Always use mock data for testing
-      const { mockOrders } = await import('@/lib/mockData');
-      
-      if (mockOrders.length > 0) {
-        const totalOrders = mockOrders.length;
-        const completedPickups = mockOrders.filter(o => 
-          o.status === 'scanned' || o.status === 'in_transit_to_customer' || o.status === 'delivered'
-        ).length;
-        const completedDeliveries = mockOrders.filter(o => o.status === 'delivered').length;
-        const inProgress = mockOrders.filter(o => 
-          o.status === 'scanned' || o.status === 'in_transit_to_facility' || o.status === 'in_transit_to_customer'
-        ).length;
-
-        console.log('Loaded mock stats:', { totalOrders, completedPickups, completedDeliveries, inProgress });
-        setStats({
-          totalOrders,
-          completedPickups,
-          completedDeliveries,
-          inProgress,
-        });
-      } else {
-        setStats({
-          totalOrders: 0,
-          completedPickups: 0,
-          completedDeliveries: 0,
-          inProgress: 0,
-        });
+      const driverId = await getCurrentDriverId();
+      if (!driverId) {
+        setStats({ totalOrders: 0, completedPickups: 0, completedDeliveries: 0, inProgress: 0 });
+        return;
       }
+
+      const today = new Date().toISOString().split('T')[0];
+      const { data: orders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_pickup_driver_id.eq.${driverId},assigned_dropoff_driver_id.eq.${driverId}`)
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lte('created_at', `${today}T23:59:59.999Z`);
+
+      if (error) throw error;
+
+      const totalOrders = orders?.length || 0;
+      const completedPickups = orders?.filter(o => 
+        o.status === 'scanned' || o.status === 'delivered'
+      ).length || 0;
+      const completedDeliveries = orders?.filter(o => o.status === 'delivered').length || 0;
+      const inProgress = orders?.filter(o => 
+        o.status === 'scanned' || o.status === 'in_transit_to_facility' || o.status === 'arrived_at_facility'
+      ).length || 0;
+
+      setStats({
+        totalOrders,
+        completedPickups,
+        completedDeliveries,
+        inProgress,
+      });
     } catch (error) {
       console.error('Error loading stats:', error);
       setStats({
@@ -111,9 +114,6 @@ export default function HomeScreen() {
         <View style={styles.welcomeSection}>
           <Text style={styles.welcomeText}>Welkom terug!</Text>
           <Text style={styles.driverName}>{driverName}</Text>
-          <TouchableOpacity style={styles.testStatsButton} onPress={loadStats}>
-            <Text style={styles.testStatsButtonText}>Test Stats</Text>
-          </TouchableOpacity>
         </View>
         <View style={styles.logoContainer}>
           <Truck size={32} color="#3b82f6" />
@@ -174,6 +174,16 @@ export default function HomeScreen() {
               <Text style={styles.actionDescription}>Zie je geplande stops voor vandaag</Text>
             </View>
           </TouchableOpacity>
+
+          <TouchableOpacity style={styles.actionCard} onPress={() => router.push('/(tabs)/agenda' as any)}>
+            <View style={styles.actionIcon}>
+              <Calendar size={20} color="#8b5cf6" />
+            </View>
+            <View style={styles.actionContent}>
+              <Text style={styles.actionTitle}>Bekijk Agenda</Text>
+              <Text style={styles.actionDescription}>Bekijk je bestellingen per dag</Text>
+            </View>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -184,6 +194,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+    alignItems: 'stretch',
   },
   header: {
     backgroundColor: '#ffffff',
@@ -194,6 +205,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    width: '100%',
   },
   welcomeSection: {
     flex: 1,
@@ -202,24 +214,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#64748b',
     marginBottom: 4,
+    textAlign: 'left',
   },
   driverName: {
     fontSize: 24,
     fontWeight: '700',
     color: '#1e293b',
-    marginBottom: 12,
-  },
-  testStatsButton: {
-    backgroundColor: '#f59e0b',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    alignSelf: 'flex-start',
-  },
-  testStatsButtonText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '600',
+    textAlign: 'left',
   },
   logoContainer: {
     width: 60,
@@ -232,6 +233,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: 20,
+    width: '100%',
   },
   section: {
     marginTop: 28,
@@ -241,6 +243,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 20,
+    textAlign: 'left',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -281,11 +284,13 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 4,
+    textAlign: 'left',
   },
   statTitle: {
     fontSize: 12,
     color: '#64748b',
     fontWeight: '600',
+    textAlign: 'left',
   },
   actionCard: {
     backgroundColor: '#ffffff',

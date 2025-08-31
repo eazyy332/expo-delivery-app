@@ -37,7 +37,7 @@ export const printQRLabel = async ({ orderNumber, qrCode, customerName }: QRLabe
 };
 
 const generateLabelHTML = (orderNumber: string, qrCode: string, customerName: string): string => {
-  // Generate QR code using a web service (for demo purposes)
+  // Generate QR code using a web service
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qrCode || orderNumber)}`;
   
   return `

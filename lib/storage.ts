@@ -27,6 +27,11 @@ export const uploadPhoto = async (uri: string, fileName: string): Promise<string
       });
 
     if (error) {
+      if (error.message.includes('Bucket not found')) {
+        console.warn('Storage bucket "order-photos" not found. Please create it in your Supabase dashboard.');
+        console.warn('For now, returning the local URI as fallback.');
+        return uri; // Return local URI as fallback
+      }
       console.error('Error uploading photo:', error);
       return null;
     }
@@ -39,7 +44,8 @@ export const uploadPhoto = async (uri: string, fileName: string): Promise<string
     return publicUrlData.publicUrl;
   } catch (error) {
     console.error('Error in uploadPhoto:', error);
-    return null;
+    // Fallback to local URI if upload fails
+    return uri;
   }
 };
 

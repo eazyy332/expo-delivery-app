@@ -19,6 +19,8 @@ import {
   LogOut 
 } from 'lucide-react-native';
 import { router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+import { getCurrentDriverId, getCurrentDriverName } from '@/lib/auth';
 
 export default function ProfileScreen() {
   const [stats, setStats] = useState({
@@ -39,38 +41,46 @@ export default function ProfileScreen() {
     try {
       setLoading(true);
       
-      // Always use mock data for testing
-      const { mockOrders, mockDriver } = await import('@/lib/mockData');
-      
-      // Set mock driver info
-      setDriverName(mockDriver.name);
-      setDriverEmail(mockDriver.email);
-      
-      if (mockOrders.length > 0) {
-        const totalOrders = mockOrders.length;
-        const completedPickups = mockOrders.filter(o => 
-          o.status === 'scanned' || o.status === 'in_transit_to_customer' || o.status === 'delivered'
-        ).length;
-        const completedDeliveries = mockOrders.filter(o => o.status === 'delivered').length;
-        const inProgress = mockOrders.filter(o => 
-          o.status === 'scanned' || o.status === 'in_transit_to_facility' || o.status === 'in_transit_to_customer'
-        ).length;
-
-        console.log('Loaded mock profile stats:', { totalOrders, completedPickups, completedDeliveries, inProgress });
-        setStats({
-          totalOrders,
-          completedPickups,
-          completedDeliveries,
-          inProgress,
-        });
-      } else {
-        setStats({
-          totalOrders: 0,
-          completedPickups: 0,
-          completedDeliveries: 0,
-          inProgress: 0,
-        });
+      const driverId = await getCurrentDriverId();
+      if (!driverId) {
+        setStats({ totalOrders: 0, completedPickups: 0, completedDeliveries: 0, inProgress: 0 });
+        return;
       }
+
+      // Get driver info from auth
+      const name = await getCurrentDriverName();
+      setDriverName(name);
+      
+      // Get driver email from Supabase auth
+      const { data: { user } } = await supabase.auth.getUser();
+      setDriverEmail(user?.email || '');
+
+      // Get today's stats
+      const today = new Date().toISOString().split('T')[0];
+      const { data: orders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_pickup_driver_id.eq.${driverId},assigned_dropoff_driver_id.eq.${driverId}`)
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lte('created_at', `${today}T23:59:59.999Z`);
+
+      if (error) throw error;
+
+      const totalOrders = orders?.length || 0;
+      const completedPickups = orders?.filter(o => 
+        o.status === 'scanned' || o.status === 'delivered'
+      ).length || 0;
+      const completedDeliveries = orders?.filter(o => o.status === 'delivered').length || 0;
+      const inProgress = orders?.filter(o => 
+        o.status === 'scanned' || o.status === 'in_transit_to_facility' || o.status === 'arrived_at_facility'
+      ).length || 0;
+
+      setStats({
+        totalOrders,
+        completedPickups,
+        completedDeliveries,
+        inProgress,
+      });
     } catch (error) {
       console.error('Error loading profile:', error);
       setStats({
@@ -142,6 +152,7 @@ export default function ProfileScreen() {
           <View style={styles.driverInfo}>
             <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.driverTitle}>Eazyy Chauffeur</Text>
+            {driverEmail && <Text style={styles.driverEmail}>{driverEmail}</Text>}
           </View>
         </View>
         <TouchableOpacity style={styles.settingsButton}>
@@ -218,6 +229,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+    alignItems: 'stretch',
   },
   header: {
     backgroundColor: '#ffffff',
@@ -251,10 +263,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 4,
+    textAlign: 'left',
   },
   driverTitle: {
     fontSize: 16,
     color: '#64748b',
+    marginBottom: 2,
+    textAlign: 'left',
+  },
+  driverEmail: {
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'left',
   },
   settingsButton: {
     width: 44,
@@ -267,6 +287,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: 20,
+    width: '100%',
   },
   section: {
     marginTop: 28,
@@ -276,6 +297,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 20,
+    textAlign: 'left',
   },
   statsGrid: {
     flexDirection: 'row',

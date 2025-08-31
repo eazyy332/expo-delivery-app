@@ -4,32 +4,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const getCurrentDriverId = async (): Promise<string | null> => {
   try {
     const driverId = await AsyncStorage.getItem('driver_id');
-    
-    // For testing, if no driver ID is set, return demo driver ID
-    if (!driverId) {
-      return 'demo-driver-001';
-    }
-    
     return driverId;
   } catch (error) {
     console.error('Error getting driver ID:', error);
-    return 'demo-driver-001';
+    return null;
   }
 };
 
 export const getCurrentDriverName = async (): Promise<string> => {
   try {
     const driverName = await AsyncStorage.getItem('driver_name');
-    
-    // For testing, if no driver name is set, return demo driver name
-    if (!driverName) {
-      return 'Demo Chauffeur';
-    }
-    
-    return driverName;
+    return driverName || 'Chauffeur';
   } catch (error) {
     console.error('Error getting driver name:', error);
-    return 'Demo Chauffeur';
+    return 'Chauffeur';
   }
 };
 

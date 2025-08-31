@@ -12,6 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { Package, QrCode, CheckCircle, X } from 'lucide-react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { supabase } from '@/lib/supabase';
+import { getCurrentDriverId } from '@/lib/auth';
 
 export default function FacilityScreen() {
   const [orders, setOrders] = useState<any[]>([]);
@@ -20,10 +22,34 @@ export default function FacilityScreen() {
   const [showScanner, setShowScanner] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [scanLock, setScanLock] = useState(false);
+  const [driverId, setDriverId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadOrders();
+    (async () => {
+      const id = await getCurrentDriverId();
+      setDriverId(id);
+      await loadOrders(id || undefined);
+    })();
   }, []);
+
+  useEffect(() => {
+    if (!driverId) return;
+    const channel = supabase
+      .channel(`facility-orders-${driverId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'orders',
+        filter: `or(assigned_pickup_driver_id.eq.${driverId},assigned_dropoff_driver_id.eq.${driverId})`,
+      }, () => {
+        loadOrders(driverId);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [driverId]);
 
   const openScanner = async () => {
     if (!permission || !permission.granted) {
@@ -42,62 +68,65 @@ export default function FacilityScreen() {
   const onBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanLock) return;
     setScanLock(true);
-    
-    // For testing: accept any QR code and scan the first ready order
-    const firstReadyOrder = orders.find(o => o.status === 'ready_for_delivery');
-    if (!firstReadyOrder) {
-      Alert.alert('Geen orders', 'Er zijn geen orders klaar om te scannen.');
-      setScanLock(false);
-      return;
-    }
-    
-    console.log('QR scanned for testing:', data);
-    setShowScanner(false);
-    await handleScanOrder(firstReadyOrder);
-  };
 
-  const loadOrders = async () => {
     try {
-      setLoading(true);
-      
-      const { getCurrentDriverId } = await import('@/lib/auth');
-      const driverId = await getCurrentDriverId();
-      
-      // Try to get real data first, fallback to mock data
-      try {
-        if (driverId) {
-          const { supabase } = await import('@/lib/supabase');
-          
-          // Get today's orders assigned to this driver that are ready for pickup
-          const today = new Date().toISOString().split('T')[0];
-          const { data: facilityOrders, error } = await supabase
-            .from('orders')
-            .select('*')
-            .eq('assigned_driver_id', driverId)
-            .in('status', ['ready_for_delivery', 'scanned'])
-            .gte('created_at', `${today}T00:00:00.000Z`)
-            .lte('created_at', `${today}T23:59:59.999Z`)
-            .order('created_at', { ascending: true });
+      const id = driverId || (await getCurrentDriverId());
+      if (!id) throw new Error('Geen chauffeur');
 
-          if (error) throw error;
+      const today = new Date().toISOString().split('T')[0];
+      const { data: matchOrders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_pickup_driver_id.eq.${id},assigned_dropoff_driver_id.eq.${id}`)
+        .in('status', ['ready_for_delivery'])
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lte('created_at', `${today}T23:59:59.999Z`)
+        .or(`qr_code.eq.${data},order_number.eq.${data}`);
 
-          if (facilityOrders && facilityOrders.length > 0) {
-            setOrders(facilityOrders);
-            return;
-          }
-        }
-      } catch (error) {
-        console.log('Using mock data for facility orders');
+      if (error) throw error;
+      const match = (matchOrders || [])[0];
+      if (!match) {
+        Alert.alert('Niet gevonden', 'QR komt niet overeen met een te scannen order.');
+        setScanLock(false);
+        return;
       }
 
-      // Always fallback to mock data for testing
-      const { mockOrders } = await import('@/lib/mockData');
-      const facilityOrders = mockOrders.filter(order => 
-        ['ready_for_delivery', 'scanned'].includes(order.status)
-      );
-      
-      console.log('Loaded mock orders:', facilityOrders.length);
-      setOrders(facilityOrders);
+      const { error: updErr } = await supabase
+        .from('orders')
+        .update({ status: 'scanned', updated_at: new Date().toISOString() })
+        .eq('id', match.id);
+      if (updErr) throw updErr;
+
+      setShowScanner(false);
+      Alert.alert('Succes', `Bestelling ${match.order_number} is gescand!`);
+    } catch (e) {
+      console.error(e);
+      Alert.alert('Fout', 'Scannen mislukt, probeer opnieuw.');
+      setScanLock(false);
+    }
+  };
+
+  const loadOrders = async (id?: string) => {
+    try {
+      setLoading(true);
+      const driver = id || (await getCurrentDriverId());
+      if (!driver) {
+        setOrders([]);
+        return;
+      }
+
+      const today = new Date().toISOString().split('T')[0];
+      const { data: facilityOrders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_pickup_driver_id.eq.${driver},assigned_dropoff_driver_id.eq.${driver}`)
+        .in('status', ['ready_for_delivery', 'scanned'])
+        .gte('created_at', `${today}T00:00:00.000Z`)
+        .lte('created_at', `${today}T23:59:59.999Z`)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+      setOrders(facilityOrders || []);
     } catch (error) {
       console.error('Error loading orders:', error);
       Alert.alert('Fout', 'Kon bestellingen niet laden.');
@@ -109,84 +138,11 @@ export default function FacilityScreen() {
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadOrders();
+    loadOrders(driverId || undefined);
   };
 
-  const handleScanOrder = async (order: any) => {
-    try {
-      // Try to update real database first
-      try {
-        const { supabase } = await import('@/lib/supabase');
-        
-        const { error } = await supabase
-          .from('orders')
-          .update({
-            status: 'scanned',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', order.id);
-
-        if (error) throw error;
-      } catch (error) {
-        console.log('Using mock data - order status updated locally');
-        // For mock data, update the local state
-        setOrders(prev => prev.map(o => 
-          o.id === order.id ? { ...o, status: 'scanned' } : o
-        ));
-      }
-
-      Alert.alert('Succes', `Bestelling ${order.order_number} is gescand!`, [
-        { text: 'OK', onPress: loadOrders }
-      ]);
-    } catch (error) {
-      console.error('Error scanning order:', error);
-      Alert.alert('Fout', 'Kon bestelling niet scannen. Probeer opnieuw.');
-    }
-  };
-
-  const handleTestScan = async () => {
-    if (readyOrders.length === 0) return;
-    
-    // Simulate scanning the first ready order
-    const firstOrder = readyOrders[0];
-    await handleScanOrder(firstOrder);
-  };
-
-  const OrderCard = ({ order, isScanned = false }: { 
-    order: any; 
-    isScanned?: boolean 
-  }) => (
-    <View style={[styles.orderCard, isScanned && styles.scannedOrderCard]}>
-      <View style={styles.orderHeader}>
-        <View style={styles.orderInfo}>
-          <Text style={styles.customerName}>{order.customer_name}</Text>
-          <Text style={styles.address}>{order.shipping_address}</Text>
-          <Text style={styles.orderNumber}>#{order.order_number}</Text>
-        </View>
-        {isScanned ? (
-          <CheckCircle size={24} color="#10b981" />
-        ) : (
-          <QrCode size={24} color="#3b82f6" />
-        )}
-      </View>
-      
-      <View style={styles.orderFooter}>
-        <View style={[styles.statusBadge, isScanned ? styles.scannedBadge : styles.readyBadge]}>
-          <Text style={[styles.statusText, isScanned ? styles.scannedText : styles.readyText]}>
-            {isScanned ? 'Gescand' : 'Te scannen'}
-          </Text>
-        </View>
-        {!isScanned && (
-          <TouchableOpacity style={styles.scanInlineButton} onPress={openScanner}>
-            <Text style={styles.scanInlineText}>Scan</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  );
-
-  const readyOrders = orders.filter(order => order.status === 'ready_for_delivery');
-  const scannedOrders = orders.filter(order => order.status === 'scanned');
+        const readyOrders = orders.filter(order => order.status === 'ready_for_delivery');
+      const scannedOrders = orders.filter(order => order.status === 'scanned');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -194,11 +150,7 @@ export default function FacilityScreen() {
       
       <View style={styles.header}>
         <Text style={styles.title}>Facility Pickup</Text>
-        <Text style={styles.subtitle}>Eazyy Amsterdam Hub • Scan jouw toegewezen orders</Text>
-        <View style={styles.facilityInfo}>
-          <Text style={styles.facilityAddress}>Amsterdam Centraal, Stationsplein 1</Text>
-          <Text style={styles.facilityHours}>06:00 - 22:00</Text>
-        </View>
+        <Text style={styles.subtitle}>Scan jouw toegewezen orders</Text>
       </View>
 
       <ScrollView 
@@ -228,7 +180,21 @@ export default function FacilityScreen() {
             </View>
           ) : (
             readyOrders.map((order) => (
-              <OrderCard key={order.id} order={order} />
+              <View key={order.id} style={styles.orderCard}>
+                <View style={styles.orderHeader}>
+                  <View style={styles.orderInfo}>
+                    <Text style={styles.customerName}>{order.customer_name}</Text>
+                    <Text style={styles.address}>{order.shipping_address}</Text>
+                    <Text style={styles.orderNumber}>#{order.order_number}</Text>
+                  </View>
+                  <QrCode size={24} color="#3b82f6" />
+                </View>
+                <View style={styles.orderFooter}>
+                  <View style={[styles.statusBadge, styles.readyBadge]}>
+                    <Text style={[styles.statusText, styles.readyText]}>Te scannen</Text>
+                  </View>
+                </View>
+              </View>
             ))
           )}
         </View>
@@ -240,7 +206,21 @@ export default function FacilityScreen() {
             </View>
             
             {scannedOrders.map((order) => (
-              <OrderCard key={order.id} order={order} isScanned />
+              <View key={order.id} style={[styles.orderCard, styles.scannedOrderCard]}>
+                <View style={styles.orderHeader}>
+                  <View style={styles.orderInfo}>
+                    <Text style={styles.customerName}>{order.customer_name}</Text>
+                    <Text style={styles.address}>{order.shipping_address}</Text>
+                    <Text style={styles.orderNumber}>#{order.order_number}</Text>
+                  </View>
+                  <CheckCircle size={24} color="#10b981" />
+                </View>
+                <View style={styles.orderFooter}>
+                  <View style={[styles.statusBadge, styles.scannedBadge]}>
+                    <Text style={[styles.statusText, styles.scannedText]}>Gescand</Text>
+                  </View>
+                </View>
+              </View>
             ))}
           </View>
         )}
@@ -271,6 +251,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+    alignItems: 'stretch',
   },
   header: {
     backgroundColor: '#ffffff',
@@ -284,29 +265,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 4,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 16,
     color: '#64748b',
     marginBottom: 16,
-  },
-  facilityInfo: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  facilityAddress: {
-    fontSize: 14,
-    color: '#475569',
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  facilityHours: {
-    fontSize: 12,
-    color: '#94a3b8',
+    textAlign: 'center',
   },
   content: {
     flex: 1,
     paddingHorizontal: 20,
+    width: '100%',
   },
   section: {
     marginTop: 24,
@@ -371,12 +341,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     marginBottom: 6,
+    textAlign: 'left',
   },
   address: {
     fontSize: 15,
     color: '#64748b',
     lineHeight: 22,
     marginBottom: 4,
+    textAlign: 'left',
   },
   orderNumber: {
     fontSize: 13,
@@ -408,17 +380,6 @@ const styles = StyleSheet.create({
   },
   scannedText: {
     color: '#166534',
-  },
-  scanInlineButton: {
-    backgroundColor: '#3b82f6',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  scanInlineText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '600',
   },
   emptyState: {
     alignItems: 'center',

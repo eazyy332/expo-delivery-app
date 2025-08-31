@@ -28,6 +28,8 @@ import {
 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { printQRLabel } from '@/components/QRLabelPrinter';
+import { getCurrentDriverId } from '@/lib/auth';
+import { canCompletePickup, canCompleteDelivery } from '@/lib/statusTransitions';
 
 export default function CurrentScreen() {
   const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
@@ -43,20 +45,12 @@ export default function CurrentScreen() {
   useEffect(() => {
     const initializeDriver = async () => {
       try {
-        // Get driver ID from auth system
-        const { getCurrentDriverId } = await import('@/lib/auth');
         const driverIdFromAuth = await getCurrentDriverId();
-        
         if (driverIdFromAuth) {
           setDriverId(driverIdFromAuth);
-        } else {
-          // For demo purposes, set a mock driver ID
-          setDriverId('demo-driver-001');
         }
       } catch (error) {
         console.error('Error initializing driver:', error);
-        // Fallback to demo driver
-        setDriverId('demo-driver-001');
       }
     };
 
@@ -69,42 +63,40 @@ export default function CurrentScreen() {
     requestCameraPermission();
   }, []);
 
-  // Load current order when driver ID is set
   useEffect(() => {
     if (driverId) {
       loadCurrentOrder();
+      const channel = supabase
+        .channel(`current-order-${driverId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `or(assigned_pickup_driver_id.eq.${driverId},assigned_dropoff_driver_id.eq.${driverId})`,
+        }, () => {
+          loadCurrentOrder();
+        })
+        .subscribe();
+      return () => {
+        supabase.removeChannel(channel);
+      };
     }
   }, [driverId]);
 
-  // Photo upload functionality
   const uploadPhoto = async (uri: string, fileName: string): Promise<string> => {
-    try {
-      // For demo purposes, return a mock URL
-      if (__DEV__) {
-        return `https://via.placeholder.com/300x200/4CAF50/FFFFFF?text=${encodeURIComponent(fileName)}`;
-      }
-
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      
-      const { data, error } = await supabase.storage
-        .from('order-photos')
-        .upload(`${driverId}/${fileName}`, blob, {
-          contentType: 'image/jpeg',
-          upsert: true
-        });
-
-      if (error) throw error;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('order-photos')
-        .getPublicUrl(data.path);
-
-      return publicUrl;
-    } catch (error) {
-      console.error('Photo upload error:', error);
-      throw error;
-    }
+    const response = await fetch(uri);
+    const blob = await response.blob();
+    const { data, error } = await supabase.storage
+      .from('order-photos')
+      .upload(`${driverId}/${fileName}`, blob, {
+        contentType: 'image/jpeg',
+        upsert: true,
+      });
+    if (error) throw error;
+    const { data: { publicUrl } } = supabase.storage
+      .from('order-photos')
+      .getPublicUrl(data.path);
+    return publicUrl;
   };
 
   const makePhoneCall = (phoneNumber: string) => {
@@ -119,53 +111,53 @@ export default function CurrentScreen() {
 
   const loadCurrentOrder = async () => {
     if (!driverId) return;
-    
     try {
       setLoading(true);
-      
-      // Try to get real orders first, fallback to mock data
-      try {
-        const { data: orders, error } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('assigned_driver_id', driverId)
-          .in('status', ['ready_for_delivery', 'scanned', 'in_transit_to_facility', 'in_transit_to_customer'])
-          .order('created_at', { ascending: true })
-          .limit(1);
-
-        if (error) throw error;
-
-        if (orders && orders.length > 0) {
-          const order = orders[0];
-          setCurrentOrder(order);
-          
-          // Determine action type based on order status
+      const { data: orders, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_pickup_driver_id.eq.${driverId},assigned_dropoff_driver_id.eq.${driverId}`)
+        .in('status', ['ready_for_delivery', 'scanned', 'in_transit_to_facility', 'arrived_at_facility'])
+        .order('created_at', { ascending: true })
+        .limit(1);
+      if (error) throw error;
+      const order = orders && orders[0];
+      setCurrentOrder(order || null);
+      if (order) {
+        // Determine action type based on status and order type
+        if (order.type === 'pickup') {
           if (order.status === 'ready_for_delivery' || order.status === 'scanned') {
             setActionType('pickup');
+          } else if (order.status === 'in_transit_to_facility') {
+            setActionType('pickup'); // Still pickup until arrived at facility
+          } else if (order.status === 'arrived_at_facility') {
+            setActionType('dropoff'); // Now ready for dropoff
+          } else {
+            setActionType('pickup');
+          }
+        } else if (order.type === 'delivery') {
+          if (order.status === 'ready_for_delivery' || order.status === 'scanned') {
+            setActionType('pickup'); // Pickup from facility
+          } else if (order.status === 'in_transit_to_facility') {
+            setActionType('pickup'); // Still pickup until arrived
+          } else if (order.status === 'arrived_at_facility') {
+            setActionType('dropoff'); // Now ready for delivery
           } else {
             setActionType('dropoff');
           }
-          return;
-        }
-      } catch (error) {
-        console.log('Using mock data for testing');
-      }
-
-      // Fallback to mock data
-      const { mockOrders } = await import('@/lib/mockData');
-      const mockOrder = mockOrders.find(order => 
-        order.status === 'ready_for_delivery' || order.status === 'scanned' || order.status === 'in_transit_to_customer'
-      );
-      
-      if (mockOrder) {
-        setCurrentOrder(mockOrder);
-        if (mockOrder.status === 'ready_for_delivery' || mockOrder.status === 'scanned') {
-          setActionType('pickup');
         } else {
-          setActionType('dropoff');
+          // Fallback logic based on status only
+          if (order.status === 'ready_for_delivery' || order.status === 'scanned') {
+            setActionType('pickup');
+          } else if (order.status === 'arrived_at_facility') {
+            setActionType('dropoff');
+          } else {
+            setActionType('pickup');
+          }
         }
-      } else {
-        setCurrentOrder(null);
+        
+        // Log status for debugging
+        console.log(`Order ${order.order_number} status: ${order.status}, type: ${order.type}, action: ${actionType}`);
       }
     } catch (error) {
       console.error('Error loading order:', error);
@@ -177,54 +169,32 @@ export default function CurrentScreen() {
 
   const takePhoto = async () => {
     if (Platform.OS === 'web') {
-      Alert.alert('Camera Niet Beschikbaar', 'Foto maken is niet beschikbaar op web. Gebruik de mobiele app voor volledige functionaliteit.');
+      Alert.alert('Camera Niet Beschikbaar', 'Foto maken is niet beschikbaar op web. Gebruik de mobiele app.');
       return;
     }
-
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Toestemming Vereist', 'Camera toegang is nodig om foto\'s te maken');
       return;
     }
-
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [4, 3],
       quality: 0.8,
     });
-
     if (!result.canceled && result.assets[0]) {
       setPhotoUri(result.assets[0].uri);
     }
   };
 
-  const simulatePhoto = () => {
-    // Simulate taking a photo for testing
-    const mockPhotoUri = 'https://via.placeholder.com/300x200/4CAF50/FFFFFF?text=Test+Photo';
-    setPhotoUri(mockPhotoUri);
-    Alert.alert('Test Foto', 'Foto gesimuleerd voor testen!');
-  };
-
-  const simulateQRScan = () => {
-    // Simulate QR code scanning for testing
-    if (currentOrder) {
-      const mockQRCode = currentOrder.qr_code;
-      handleQRScan(mockQRCode);
-      Alert.alert('Test QR Scan', `QR Code ${mockQRCode} gescand!`);
-    } else {
-      Alert.alert('Geen Order', 'Er is geen actieve order om te testen.');
-    }
-  };
-
   const handlePrintQRLabel = async () => {
     if (!currentOrder) return;
-
     try {
       await printQRLabel({
         orderNumber: currentOrder.order_number,
         qrCode: currentOrder.qr_code || currentOrder.order_number,
-        customerName: currentOrder.customer_name
+        customerName: currentOrder.customer_name,
       });
     } catch (error) {
       console.error('Print error:', error);
@@ -251,50 +221,31 @@ export default function CurrentScreen() {
       Alert.alert('Fout', 'Foto is vereist voor pickup bevestiging');
       return;
     }
-
     setLoading(true);
     try {
-      // Upload photo to Supabase storage
       const uploadedPhotoUrl = await uploadPhotoToSupabase(
-        photoUri, 
+        photoUri,
         `pickup_${currentOrder.order_number}_${Date.now()}`
       );
-
       if (!uploadedPhotoUrl && Platform.OS !== 'web') {
         Alert.alert('Fout', 'Kon foto niet uploaden. Probeer opnieuw.');
         return;
       }
-
-      // Try to update real database first
-      try {
-        const { error } = await supabase
-          .from('orders')
-          .update({
-            status: 'in_transit_to_facility',
-            pickup_photo_url: uploadedPhotoUrl || photoUri,
-            pickup_date: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', currentOrder.id);
-
-        if (error) throw error;
-      } catch (error) {
-        console.log('Using mock data - order status updated locally');
-        // For mock data, update the local state
-        setCurrentOrder(prev => prev ? {
-          ...prev,
-          status: 'in_transit_to_facility',
+      // Determine correct status based on order type
+      const newStatus = 'in_transit_to_facility';
+      
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          status: newStatus,
           pickup_photo_url: uploadedPhotoUrl || photoUri,
           pickup_date: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-        } : null);
-      }
-
+        })
+        .eq('id', currentOrder.id);
+      if (error) throw error;
       Alert.alert('Succes', 'Pickup succesvol voltooid!', [
-        { text: 'OK', onPress: () => {
-          setPhotoUri(null);
-          loadCurrentOrder();
-        }}
+        { text: 'OK', onPress: () => { setPhotoUri(null); loadCurrentOrder(); } }
       ]);
     } catch (error) {
       console.error('Error completing pickup:', error);
@@ -311,33 +262,22 @@ export default function CurrentScreen() {
 
   const handleQRScan = async (data: string) => {
     if (!currentOrder) return;
-
-    // Check if scanned data matches current order
     if (data === currentOrder.qr_code || data === currentOrder.order_number) {
       setShowScanner(false);
-      
-      // Update order status based on current action type
       if (actionType === 'pickup') {
-        // Mark as scanned for pickup
         try {
           const { error } = await supabase
             .from('orders')
-            .update({
-              status: 'scanned',
-              updated_at: new Date().toISOString(),
-            })
+            .update({ status: 'scanned', updated_at: new Date().toISOString() })
             .eq('id', currentOrder.id);
-
           if (error) throw error;
-
           Alert.alert('Succes', 'QR code succesvol gescand! U kunt nu de pickup voltooien.');
-          loadCurrentOrder(); // Refresh order data
+          loadCurrentOrder();
         } catch (error) {
           console.error('Error updating order:', error);
           Alert.alert('Fout', 'QR code gescand maar kon status niet bijwerken.');
         }
       } else {
-        // For dropoff, just confirm the scan
         Alert.alert('Succes', 'QR code succesvol geverifieerd voor aflevering!');
       }
     } else {
@@ -350,44 +290,32 @@ export default function CurrentScreen() {
 
   const completeDropoff = async () => {
     if (!currentOrder) return;
-
     setLoading(true);
     try {
+              // Check if status transition is valid
+        if (!canCompleteDelivery(currentOrder.status)) {
+          Alert.alert('Fout', `Kan order niet afleveren vanuit status: ${currentOrder.status}`);
+          setLoading(false);
+          return;
+        }
+
       const updates: any = {
         status: 'delivered',
         updated_at: new Date().toISOString(),
       };
-
-      if (recipientName) {
-        updates.recipient_name = recipientName;
-      }
-
+      if (recipientName) updates.recipient_name = recipientName;
       if (photoUri) {
-        // Upload delivery photo
         const uploadedPhotoUrl = await uploadPhotoToSupabase(
-          photoUri, 
+          photoUri,
           `delivery_${currentOrder.order_number}_${Date.now()}`
         );
         updates.delivery_photo_url = uploadedPhotoUrl || photoUri;
       }
-
-      // Try to update real database first
-      try {
-        const { error } = await supabase
-          .from('orders')
-          .update(updates)
-          .eq('id', currentOrder.id);
-
-        if (error) throw error;
-      } catch (error) {
-        console.log('Using mock data - order status updated locally');
-        // For mock data, update the local state
-        setCurrentOrder(prev => prev ? {
-          ...prev,
-          ...updates,
-        } : null);
-      }
-
+      const { error } = await supabase
+        .from('orders')
+        .update(updates)
+        .eq('id', currentOrder.id);
+      if (error) throw error;
       Alert.alert('Succes', 'Aflevering succesvol voltooid!');
       setRecipientName('');
       setPhotoUri(null);
@@ -402,10 +330,9 @@ export default function CurrentScreen() {
 
   const openScanner = async () => {
     if (Platform.OS === 'web') {
-      Alert.alert('Camera Niet Beschikbaar', 'QR scanning is niet beschikbaar op web. Gebruik de mobiele app voor volledige functionaliteit.');
+      Alert.alert('Camera Niet Beschikbaar', 'QR scanning is niet beschikbaar op web.');
       return;
     }
-
     if (!permission?.granted) {
       const result = await requestPermission();
       if (!result.granted) {
@@ -416,7 +343,6 @@ export default function CurrentScreen() {
     setShowScanner(true);
   };
 
-  // Main render logic
   if (!driverId) {
     return (
       <SafeAreaView style={styles.container}>
@@ -424,9 +350,7 @@ export default function CurrentScreen() {
         <View style={styles.emptyState}>
           <CheckCircle size={64} color="#64748b" />
           <Text style={styles.emptyStateTitle}>Geen chauffeur gevonden</Text>
-          <Text style={styles.emptyStateText}>
-            Er is een probleem met je account. Log opnieuw in.
-          </Text>
+          <Text style={styles.emptyStateText}>Log opnieuw in.</Text>
         </View>
       </SafeAreaView>
     );
@@ -474,9 +398,7 @@ export default function CurrentScreen() {
         <View style={styles.emptyState}>
           <CheckCircle size={64} color="#10b981" />
           <Text style={styles.emptyStateTitle}>Geen actieve orders</Text>
-          <Text style={styles.emptyStateText}>
-            Alle jouw orders zijn voltooid of er zijn geen orders voor vandaag
-          </Text>
+          <Text style={styles.emptyStateText}>Er zijn geen orders voor vandaag</Text>
           <TouchableOpacity style={styles.refreshButton} onPress={loadCurrentOrder}>
             <Text style={styles.refreshButtonText}>Vernieuwen</Text>
           </TouchableOpacity>
@@ -552,24 +474,6 @@ export default function CurrentScreen() {
                 {uploadingPhoto ? 'Uploading...' : photoUri ? 'Foto Genomen ✓' : 'Maak Foto van Tas'}
               </Text>
             </TouchableOpacity>
-            
-            {Platform.OS === 'web' && (
-              <>
-                <TouchableOpacity
-                  style={[styles.actionButton, styles.testButton]}
-                  onPress={simulatePhoto}
-                >
-                  <Text style={styles.testButtonText}>Test Foto</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity
-                  style={[styles.actionButton, styles.testButton]}
-                  onPress={simulateQRScan}
-                >
-                  <Text style={styles.testButtonText}>Test QR Scan</Text>
-                </TouchableOpacity>
-              </>
-            )}
 
             {photoUri && (
               <View style={styles.photoContainer}>
@@ -661,6 +565,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+    alignItems: 'stretch',
   },
   header: {
     backgroundColor: '#ffffff',
@@ -691,11 +596,13 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: '#1e293b',
+    textAlign: 'center',
   },
   content: {
     flex: 1,
     paddingHorizontal: 20,
     paddingTop: 20,
+    width: '100%',
   },
   orderCard: {
     backgroundColor: '#ffffff',
@@ -724,6 +631,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1e293b',
     flex: 1,
+    textAlign: 'left',
   },
   orderId: {
     fontSize: 14,
@@ -745,6 +653,7 @@ const styles = StyleSheet.create({
     color: '#64748b',
     lineHeight: 24,
     flex: 1,
+    textAlign: 'left',
   },
   phoneContainer: {
     flexDirection: 'row',
@@ -797,15 +706,7 @@ const styles = StyleSheet.create({
     color: '#1e293b',
     fontWeight: '600',
   },
-  testButton: {
-    backgroundColor: '#f59e0b',
-    marginTop: 8,
-  },
-  testButtonText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+
   inputContainer: {
     marginBottom: 16,
   },

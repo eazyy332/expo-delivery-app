@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Truck, Home, Route, User } from 'lucide-react-native';
+import { Truck, Home, Route, Calendar, User } from 'lucide-react-native';
 
 export default function TabLayout() {
   return (
@@ -45,6 +45,15 @@ export default function TabLayout() {
           title: 'Route',
           tabBarIcon: ({ color, size }) => (
             <Route size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="agenda"
+        options={{
+          title: 'Agenda',
+          tabBarIcon: ({ color, size }) => (
+            <Calendar size={size} color={color} />
           ),
         }}
       />
