@@ -14,6 +14,7 @@ import { StatusBar } from 'expo-status-bar';
 import { MapPin, Navigation, Package, Truck, X, CircleCheck as CheckCircle } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { getCurrentDriverId } from '@/lib/auth';
+import { router } from 'expo-router';
 import { canCompleteDelivery } from '@/lib/statusTransitions';
 
 export default function RouteScreen() {
@@ -121,24 +122,8 @@ export default function RouteScreen() {
   };
 
   const completeDelivery = async (stop: any) => {
-    try {
-      // Check if status transition is valid
-      if (!canCompleteDelivery(stop.status)) {
-        Alert.alert('Fout', `Kan order niet afleveren vanuit status: ${stop.status}`);
-        return;
-      }
-
-      const { error } = await supabase
-        .from('orders')
-        .update({ status: 'delivered', updated_at: new Date().toISOString() })
-        .eq('id', stop.id);
-      if (error) throw error;
-      Alert.alert('Afgeleverd', `Order ${stop.orderNumber} afgeleverd`);
-      advanceToNext(stop.id);
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Fout', 'Kon aflevering niet bijwerken.');
-    }
+    // Navigate to current order page for delivery verification
+    router.push('/(tabs)/current');
   };
 
   const advanceToNext = (currentId: string) => {

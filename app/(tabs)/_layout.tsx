@@ -58,6 +58,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="current"
+        options={{
+          title: 'Huidige',
+          tabBarIcon: ({ color, size }) => (
+            <Package size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="profile"
         options={{
           title: 'Profile',
