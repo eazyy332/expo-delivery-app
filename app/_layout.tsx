@@ -1,3 +1,4 @@
+import 'react-native-screens';
 import 'react-native-svg';
 import { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
